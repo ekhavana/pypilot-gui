@@ -42,6 +42,20 @@ LIST_VALUES = {
     'imu.heading_offset': {'type': 'RangeProperty', 'min': -180, 'max': 180},
     'imu.compass.calibration.locked': {'type': 'BooleanProperty'},
     'imu.accel.calibration.locked': {'type': 'BooleanProperty'},
+    'imu.accel': {'type': 'SensorValue'},
+    'imu.compass': {'type': 'SensorValue'},
+    'imu.accel.calibration': {'type': 'Value'},
+    'imu.accel.calibration.age': {'type': 'Value'},
+    'imu.accel.calibration.log': {'type': 'Value'},
+    'imu.accel.calibration.warning': {'type': 'Value'},
+    'imu.accel.calibration.sigmapoints': {'type': 'Value'},
+    'imu.accel.calibration.points': {'type': 'Value'},
+    'imu.compass.calibration': {'type': 'Value'},
+    'imu.compass.calibration.age': {'type': 'Value'},
+    'imu.compass.calibration.log': {'type': 'Value'},
+    'imu.compass.calibration.warning': {'type': 'Value'},
+    'imu.compass.calibration.sigmapoints': {'type': 'Value'},
+    'imu.compass.calibration.points': {'type': 'Value'},
     'servo.amp_hours': {'type': 'SensorValue'},
     'servo.voltage': {'type': 'SensorValue'},
     'servo.controller_temp': {'type': 'SensorValue'},
@@ -86,6 +100,20 @@ state = {
     'imu.heading_offset': 0,
     'imu.compass.calibration.locked': False,
     'imu.accel.calibration.locked': False,
+    'imu.accel': [0.0, 0.0, 1.0],
+    'imu.compass': [30.0, 0.0, 0.0],
+    'imu.accel.calibration': [[0.0, 0.0, 0.0, 1.0], 0.01],
+    'imu.accel.calibration.age': '0:05:00',
+    'imu.accel.calibration.log': 'accel calibration ok',
+    'imu.accel.calibration.warning': '',
+    'imu.accel.calibration.sigmapoints': [],
+    'imu.accel.calibration.points': [],
+    'imu.compass.calibration': [[0.0, 0.0, 0.0, 30.0], 0.5],
+    'imu.compass.calibration.age': '0:02:30',
+    'imu.compass.calibration.log': 'compass calibration updated',
+    'imu.compass.calibration.warning': '',
+    'imu.compass.calibration.sigmapoints': [],
+    'imu.compass.calibration.points': [],
     'servo.amp_hours': 0.123,
     'servo.voltage': 12.6,
     'servo.controller_temp': 31,
@@ -104,11 +132,31 @@ state = {
 watches = {}
 clients = {}   # sid -> bool (value list already sent)
 
+WIFI = {'mode': 'Master', 'ssid': 'pypilot', 'key': '',
+        'client_ssid': 'openplotter', 'client_key': '12345678', 'client_address': '10.10.10.60'}
+LEASES = ('<table id="leases">'
+          '<tr><th>IP Address</th><th>Mac Address</th><th>Name</th><th>Lease ends on</th></tr>'
+          '<tr><td>10.10.10.61</td><td>aa:bb:cc:dd:ee:ff</td><td>phone</td><td>2026-06-28 14:00:00</td></tr>'
+          '</table>')
+
 
 @app.route('/')
 def index():
-    return render_template('index.html', pypilot_web_port=PORT, tinypilot=0,
-                           translations=[], language='default', languages=Markup('[]'))
+    return render_template('index.html', pypilot_web_port=PORT, tinypilot=1,
+                           translations=[], language='default', languages=Markup('[]'),
+                           wifi=Markup(json.dumps(WIFI)),
+                           wifi_leases=Markup(LEASES if 'Master' in WIFI['mode'] else ''))
+
+
+@app.route('/wifi', methods=['GET', 'POST'])
+def wifi():
+    from flask import request
+    if request.method == 'POST':
+        for k in request.form:
+            WIFI[k] = request.form[k]
+        print('mock wifi saved:', WIFI)
+        return 'ok'
+    return json.dumps(WIFI)
 
 
 @socketio.on('connect')
@@ -150,11 +198,24 @@ def on_pypilot(msg):
     emit('pypilot', json.dumps({name: val}))
 
 
+def sphere_points(n, radius, t):
+    pts = []
+    for i in range(n):
+        a = 2 * math.pi * i / n + t
+        b = math.pi * (i / float(n) - 0.5)
+        pts.append([round(radius * math.cos(b) * math.cos(a), 3),
+                    round(radius * math.cos(b) * math.sin(a), 3),
+                    round(radius * math.sin(b), 3)])
+    return pts
+
+
 def sim_loop():
     tick = 0
+    plot_t = 0.0
     while True:
         socketio.sleep(0.25)
         tick += 1
+        plot_t += 0.15
         # mimic web.py: send the value list ONCE per client, then snapshot
         for sid in list(clients):
             if not clients.get(sid):
@@ -172,6 +233,23 @@ def sim_loop():
         state['servo.amp_hours'] = round(state['servo.amp_hours'] + 0.0001, 4)
         upd = {k: state[k] for k in ('ap.heading', 'imu.heading', 'rudder.angle', 'servo.amp_hours')}
         socketio.emit('pypilot', json.dumps(upd))
+
+        # calibration plot streams (only for whatever the GUI is watching)
+        for plot, radius in (('accel', 1.0), ('compass', 30.0)):
+            cur = 'imu.' + plot
+            if watches.get(cur):
+                a = plot_t
+                pt = [round(radius * math.cos(a), 3),
+                      round(radius * math.sin(a), 3),
+                      round(radius * 0.2 * math.sin(a * 2), 3)]
+                state[cur] = pt
+                socketio.emit('pypilot', json.dumps({cur: pt}))
+            sig = cur + '.calibration.sigmapoints'
+            if watches.get(sig) and tick % 4 == 0:
+                socketio.emit('pypilot', json.dumps({sig: sphere_points(12, radius, plot_t)}))
+            pts = cur + '.calibration.points'
+            if watches.get(pts) and tick % 4 == 0:
+                socketio.emit('pypilot', json.dumps({pts: sphere_points(30, radius, -plot_t)}))
 
 
 if __name__ == '__main__':
