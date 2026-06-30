@@ -132,11 +132,31 @@ state = {
 watches = {}
 clients = {}   # sid -> bool (value list already sent)
 
+WIFI = {'mode': 'Master', 'ssid': 'pypilot', 'key': '',
+        'client_ssid': 'openplotter', 'client_key': '12345678', 'client_address': '10.10.10.60'}
+LEASES = ('<table id="leases">'
+          '<tr><th>IP Address</th><th>Mac Address</th><th>Name</th><th>Lease ends on</th></tr>'
+          '<tr><td>10.10.10.61</td><td>aa:bb:cc:dd:ee:ff</td><td>phone</td><td>2026-06-28 14:00:00</td></tr>'
+          '</table>')
+
 
 @app.route('/')
 def index():
-    return render_template('index.html', pypilot_web_port=PORT, tinypilot=0,
-                           translations=[], language='default', languages=Markup('[]'))
+    return render_template('index.html', pypilot_web_port=PORT, tinypilot=1,
+                           translations=[], language='default', languages=Markup('[]'),
+                           wifi=Markup(json.dumps(WIFI)),
+                           wifi_leases=Markup(LEASES if 'Master' in WIFI['mode'] else ''))
+
+
+@app.route('/wifi', methods=['GET', 'POST'])
+def wifi():
+    from flask import request
+    if request.method == 'POST':
+        for k in request.form:
+            WIFI[k] = request.form[k]
+        print('mock wifi saved:', WIFI)
+        return 'ok'
+    return json.dumps(WIFI)
 
 
 @socketio.on('connect')
